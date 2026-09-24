@@ -10,6 +10,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -30,6 +31,18 @@ def api(path):
         if error.code == 404:
             return None
         raise RuntimeError("Package metadata unavailable") from None
+
+
+def private_package_after_push(path):
+    """GHCR package metadata may lag an accepted first push briefly."""
+    for delay in (1, 2, 4, 8, 16):
+        package = api(path)
+        if package:
+            if package.get("visibility") != "private":
+                raise ValueError("Package must remain private")
+            return package
+        time.sleep(delay)
+    return None
 
 
 def publish(config, output):
@@ -84,8 +97,8 @@ def publish(config, output):
             for x in info["RepoDigests"]
             if re.fullmatch(re.escape(entry["repository"]) + r"@sha256:[0-9a-f]{64}", x)
         ]
-        package = api(entry["package_path"])
-        if len(digests) != 1 or not package or package.get("visibility") != "private":
+        package = private_package_after_push(entry["package_path"])
+        if len(digests) != 1 or not package:
             raise ValueError("Published image could not be verified")
         images[key] = digests[0]
     hashes = {name: hashlib.sha256(content).hexdigest() for name, content in files.items()}
