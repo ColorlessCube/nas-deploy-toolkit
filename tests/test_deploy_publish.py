@@ -65,6 +65,24 @@ class PublishTests(unittest.TestCase):
                 publish.publish(self.config, self.output)
             run.assert_not_called()
 
+    def test_configured_branch_is_allowed_and_other_branches_rejected(self):
+        config = {**self.config, "branch": "master"}
+        environment = {**self.environment, "GITHUB_REF": "refs/heads/master"}
+        with (
+            patch.dict(publish.os.environ, environment),
+            patch.object(publish.subprocess, "check_output", side_effect=self.inspect),
+            patch.object(
+                publish,
+                "api",
+                side_effect=[None, None, {"visibility": "private"}, {"visibility": "private"}],
+            ),
+            patch.object(publish.subprocess, "run"),
+        ):
+            publish.publish(config, self.output)
+        with patch.dict(publish.os.environ, {**environment, "GITHUB_REF": "refs/heads/main"}):
+            with self.assertRaises(ValueError):
+                publish.publish(config, self.output)
+
     def test_wrong_image_revision_fails_before_any_push(self):
         self.info["Config"]["Labels"]["org.opencontainers.image.revision"] = "c" * 40
         with (

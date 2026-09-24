@@ -35,8 +35,11 @@ def api(path):
 def publish(config, output):
     sha = os.environ["GITHUB_SHA"]
     repo = os.environ["GITHUB_REPOSITORY"]
-    if os.environ["GITHUB_EVENT_NAME"] != "push" or os.environ["GITHUB_REF"] != "refs/heads/main":
-        raise ValueError("Only main push may publish continuous delivery images")
+    branch = config.get("branch", "main")
+    if not isinstance(branch, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch):
+        raise ValueError("Invalid continuous-delivery branch")
+    if os.environ["GITHUB_EVENT_NAME"] != "push" or os.environ["GITHUB_REF"] != "refs/heads/" + branch:
+        raise ValueError("Only configured branch push may publish continuous delivery images")
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise ValueError("Invalid commit")
     files = {Path(name).name: Path(name).read_bytes() for name in config["compose_files"]}
