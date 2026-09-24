@@ -49,13 +49,11 @@ def ensure_private_package(path, write_path):
     return package
 
 
-def private_package_after_push(path):
+def private_package_after_push(path, write_path):
     """GHCR package metadata may lag an accepted first push briefly."""
     for delay in (1, 2, 4, 8, 16):
-        package = api(path)
+        package = ensure_private_package(path, write_path)
         if package:
-            if package.get("visibility") != "private":
-                raise ValueError("Package must remain private")
             return package
         time.sleep(delay)
     return None
@@ -89,6 +87,7 @@ def publish(config, output):
         path = "/" + scope + "/" + owner + "/packages/container/" + name
         write_path = path if scope == "orgs" else "/user/packages/container/" + name
         entry["package_path"] = path
+        entry["package_write_path"] = write_path
         package = ensure_private_package(path, write_path)
         if package:
             for page in range(1, 101):
@@ -112,7 +111,7 @@ def publish(config, output):
             for x in info["RepoDigests"]
             if re.fullmatch(re.escape(entry["repository"]) + r"@sha256:[0-9a-f]{64}", x)
         ]
-        package = private_package_after_push(entry["package_path"])
+        package = private_package_after_push(entry["package_path"], entry["package_write_path"])
         if len(digests) != 1 or not package:
             raise ValueError("Published image could not be verified")
         images[key] = digests[0]
