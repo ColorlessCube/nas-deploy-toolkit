@@ -1,0 +1,17 @@
+services:
+  web:
+    image: ${FIXTURE_IMAGE:?Set a digest}
+    platform: linux/amd64
+    restart: unless-stopped
+    read_only: true
+    user: "10001:10001"
+    command: ["python", "-m", "http.server", "8080", "--directory", "/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 64m
+    ports: ["127.0.0.1:18991:8080"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 6

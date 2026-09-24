@@ -1,0 +1,126 @@
+name: Reusable NAS deployment
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        type: string
+        required: true
+      manifest_artifact:
+        type: string
+        required: true
+      toolkit_ref:
+        description: Full reviewed commit SHA of this toolkit; it must match the reusable workflow reference
+        type: string
+        required: true
+      plan_only:
+        type: boolean
+        default: false
+      ssh_user:
+        description: Optional service-specific account; defaults to repository NAS_SSH_USER
+        type: string
+        default: ""
+      verify_boundaries:
+        description: Read-only network and SSH denial checks during onboarding
+        type: boolean
+        default: false
+    secrets:
+      NAS_WG_PRIVATE_KEY:
+        required: true
+      NAS_WG_PUBLIC_KEY:
+        required: true
+      NAS_SSH_KEY:
+        required: true
+      NAS_KNOWN_HOSTS:
+        required: true
+      TOOLKIT_READ_TOKEN:
+        description: Only needed for cross-repository checkout of a private toolkit
+        required: false
+
+permissions:
+  contents: read
+  packages: read
+  actions: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    # Concurrency is repository-scoped. Each repository needs its OWN WG peer/key.
+    concurrency:
+      group: nas-deployment-connection
+      cancel-in-progress: false
+    env:
+      NAS_VPN_ADDRESS: ${{ vars.NAS_VPN_ADDRESS }}
+      NAS_VPN_ENDPOINT: ${{ vars.NAS_VPN_ENDPOINT }}
+      NAS_HOST: ${{ vars.NAS_HOST }}
+      NAS_SSH_USER: ${{ inputs.ssh_user || vars.NAS_SSH_USER }}
+    steps:
+      - name: Check pinned toolkit revision
+        env:
+          TOOLKIT_REF: ${{ inputs.toolkit_ref }}
+        run: |
+          [[ "$TOOLKIT_REF" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ColorlessCube/nas-deploy-toolkit
+          ref: ${{ inputs.toolkit_ref }}
+          token: ${{ secrets.TOOLKIT_READ_TOKEN || github.token }}
+          persist-credentials: false
+          sparse-checkout: infra/deploy
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ inputs.manifest_artifact }}
+          path: ${{ runner.temp }}/nas-manifest
+      - name: Check intended service
+        env:
+          DEPLOY_SERVICE: ${{ inputs.service }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib
+          manifest = json.loads((pathlib.Path(os.environ['RUNNER_TEMP']) / 'nas-manifest/deploy.json').read_text())
+          assert manifest['service'] == os.environ['DEPLOY_SERVICE']
+          PY
+      - name: Install cloud VPN client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends wireguard-tools
+      - name: Prepare private temporary connection
+        env:
+          NAS_WG_PRIVATE_KEY: ${{ secrets.NAS_WG_PRIVATE_KEY }}
+          NAS_WG_PUBLIC_KEY: ${{ secrets.NAS_WG_PUBLIC_KEY }}
+          NAS_SSH_KEY: ${{ secrets.NAS_SSH_KEY }}
+          NAS_KNOWN_HOSTS: ${{ secrets.NAS_KNOWN_HOSTS }}
+        run: python3 infra/deploy/client.py prepare --directory "$RUNNER_TEMP/nas-connection"
+      - name: Connect and submit the immutable manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN_ONLY: ${{ inputs.plan_only }}
+          VERIFY_BOUNDARIES: ${{ inputs.verify_boundaries }}
+        run: |
+          sudo wg-quick up "$RUNNER_TEMP/nas-connection/nasdeploy.conf"
+          if [ "$VERIFY_BOUNDARIES" = true ]; then
+            python3 infra/deploy/check_access.py --directory "$RUNNER_TEMP/nas-connection" --output "$RUNNER_TEMP/deploy-access.json"
+          fi
+          operation=deploy
+          if [ "$PLAN_ONLY" = true ]; then operation=plan; fi
+          python3 infra/deploy/client.py "$operation" --directory "$RUNNER_TEMP/nas-connection" \
+            --manifest "$RUNNER_TEMP/nas-manifest/deploy.json" --receipt "$RUNNER_TEMP/deploy-receipt.json"
+      - name: Save sanitized deployment receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nas-deploy-${{ inputs.service }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/deploy-receipt.json
+            ${{ runner.temp }}/deploy-access.json
+            ${{ runner.temp }}/deploy-recovery.json
+          retention-days: 30
+          if-no-files-found: warn
+      - name: Remove cloud VPN and credentials
+        if: always()
+        run: |
+          if sudo ip link show nasdeploy >/dev/null 2>&1; then
+            sudo wg-quick down "$RUNNER_TEMP/nas-connection/nasdeploy.conf"
+          fi
+          rm -rf -- "$RUNNER_TEMP/nas-connection"
