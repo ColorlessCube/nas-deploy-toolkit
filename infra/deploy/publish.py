@@ -16,13 +16,20 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
-def api(path):
+def api(path, method="GET", payload=None):
+    headers = {
+        "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+        "Accept": "application/vnd.github+json",
+    }
+    data = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(payload).encode()
     request = Request(
         "https://api.github.com" + path,
-        headers={
-            "Authorization": "Bearer " + os.environ["GH_TOKEN"],
-            "Accept": "application/vnd.github+json",
-        },
+        data=data,
+        method=method,
+        headers=headers,
     )
     try:
         with urlopen(request, timeout=20) as response:
@@ -31,6 +38,15 @@ def api(path):
         if error.code == 404:
             return None
         raise RuntimeError("Package metadata unavailable") from None
+
+
+def ensure_private_package(path, write_path):
+    package = api(path)
+    if package and package.get("visibility") != "private":
+        package = api(write_path, method="PATCH", payload={"visibility": "private"})
+    if package and package.get("visibility") != "private":
+        raise ValueError("Package must remain private")
+    return package
 
 
 def private_package_after_push(path):
@@ -71,11 +87,10 @@ def publish(config, output):
         scope = "orgs" if os.environ["OWNER_TYPE"] == "Organization" else "users"
         owner, name = entry["repository"].removeprefix("ghcr.io/").split("/")
         path = "/" + scope + "/" + owner + "/packages/container/" + name
+        write_path = path if scope == "orgs" else "/user/packages/container/" + name
         entry["package_path"] = path
-        package = api(path)
+        package = ensure_private_package(path, write_path)
         if package:
-            if package["visibility"] != "private":
-                raise ValueError("Package must remain private")
             for page in range(1, 101):
                 versions = api(path + "/versions?per_page=100&page=" + str(page))
                 if not isinstance(versions, list):

@@ -96,7 +96,7 @@ class PublishTests(unittest.TestCase):
 
     def test_all_packages_checked_before_pushing_any_component(self):
         for responses in [
-            [{"visibility": "private"}, [], {"visibility": "public"}],
+            [{"visibility": "private"}, [], {"visibility": "public"}, {"visibility": "public"}],
             [
                 {"visibility": "private"},
                 [],
